@@ -1,0 +1,22 @@
+parameter N : type[0]
+parameter O : N
+parameter S : N -> N
+
+definition numeral := (T : type[0]) -> (T -> T) -> T -> T
+definition zero := (T : type[0]) => (f : T -> T) => (x : T) => x
+definition one := (T : type[0]) => (f : T -> T) => (x : T) => f x
+definition plus := (n1 : numeral) => (n2 : numeral) => (T : type[0]) => (f : T -> T) => (x : T) => n1 T f (n2 T f x)
+
+## Anonymous universes and automatic resizing??? ####################################
+# definition times := (n1 : numeral) => (n2 : numeral) => n1 numeral (plus n2) zero #
+#####################################################################################
+
+definition times := (n1 : numeral) => (n2 : numeral) => (T : type[0]) => (f : T -> T) => n1 T (n2 T f)
+definition power := (n1 : numeral) => (n2 : numeral) => (T : type[0]) => n2 (T -> T) (n1 T)
+
+definition two := plus one one
+definition three := plus two one
+definition twohundredfiftysix := power two (power two three)
+
+evaluate twohundredfiftysix
+
