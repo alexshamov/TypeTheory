@@ -60,7 +60,10 @@ class SExpression(Statement):
 
 class SContext(Statement):
     def execute(self):
-        return None # TODO: implement
+        global globalContext
+        for n, v in globalContext.items():
+            print(str(n) + ' : ' + str(v.type) + ' = ' + str(v.value))
+        return None
 
 class SQuit(Statement):
     def execute(self):
