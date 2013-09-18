@@ -2,6 +2,11 @@ import ttErrors
 from ttErrors import *
 
 globalContext = {} # to be initialized with a dict of global vars indexed by names
+unsafeMode = False
+
+def setUnsafeMode(newUnsafeMode):
+    global unsafeMode
+    unsafeMode = newUnsafeMode
 
 class Variable(object):
     '''A unique global variable. Occurrences of variable terms inside expressions are irrelevant.'''
@@ -32,20 +37,20 @@ class Term(object):
     '''An abstract base class of terms.
     All concrete Terms are expected to implement:
         _identical(term) - Check for syntactic equality. This is also a default for __eq__.
-        equal(term) - Check for judgemental equality.
         _type() - Infer the term's type.
         _normalize() - Normalize eagerly.
         _normalizeLazily() - Normalize lazily.
-        _apply(sub) - _apply a substitution.
-        update() - Return the current progress in lazy normalization.
-    Maybe more (lazy normalization intended to expose a generator?)'''
+        _apply(sub) - apply a substitution.'''
     def __eq__(self, term):
         return self._identical(term)
-    def equal(self, term):
-        return self.normalize() == term.normalize()
-    def type(self):
+    def update(self):
         if not hasattr(self, '_current'):
             self._current = self
+        if self._current is not self:
+            self._current = self._current.update()
+        return self._current
+    def type(self):
+        self.update()
         if not hasattr(self, '_currentType'):
             if self._current is self:
                 self._currentType = self._current._type()
@@ -53,16 +58,14 @@ class Term(object):
                 self._currentType = self._current.type()
         return self._currentType
     def normalize(self):
-        if not hasattr(self, '_current'):
-            self._current = self
+        self.update()
         if self._current is self:
             self._current = self._current._normalize()
         else:
             self._current = self._current.normalize()
         return self._current
     def normalizeLazily(self):
-        if not hasattr(self, '_current'):
-            self._current = self
+        self.update()
         if self._current is self:
             self._current = self._current._normalizeLazily()
         else:
@@ -95,31 +98,35 @@ class TGlobalVariable(Term):
         return self
 
 class TBoundVariable(Term):
-    def __init__(self, name, type, deBruijn):
-        '''type is the basic type. The real type (in the context where the variable occurs) is shifted by deBruijn'''
+    def __init__(self, name, varType, deBruijn):
+        '''varType is the type within the context where the variable occurs. Thus it has to be shifted all along.'''
         self.name = name
-        self.varType = type
+        self.varType = varType
         self.deBruijn = deBruijn
     def __repr__(self):
-        return 'TGlobalVariable(' + repr(self.var) + ')'
+        return 'TBoundVariable(' + repr(self.name) + ', ' + repr(self.varType) + ', ' + repr(self.deBruijn) + ')'
     def __str__(self):
         return self.name + '[' + str(self.deBruijn) + ']'
     def _identical(self, term):
         return (self is term) or (isinstance(term, TBoundVariable) and (self.deBruijn == term.deBruijn))
     def _type(self):
-        return TSubstitution(self.varType, Substitution(shift = self.deBruijn))
+        return self.varType
     def _normalize(self):
         return self
     def _normalizeLazily(self):
         return self
     def _apply(self, sub):
-        if len(sub.subs) >= self.deBruijn:
-            if self.type().normalize() == sub.subs[-self.deBruijn].type().normalize():
-                return sub.subs[-self.deBruijn]
+#       print(self.__class__.__name__ + '._apply:')
+#       print('    self: ' + str(self))
+#       print('    self.type: ' + str(self.type()))
+#       print('    sub: ' + str(sub))
+        if sub.len >= self.deBruijn:
+            if unsafeMode or ((sub * self.type()).normalize() == sub[self.deBruijn].type().normalize()):
+                return sub[self.deBruijn]
             else:
-                raise TypeMismatchError(sub.subs[-self.deBruijn], sub.subs[-self.deBruijn].type().normalize(), self.type().normalize())
+                raise TypeMismatchError(sub[self.deBruijn], sub[self.deBruijn].type().normalize(), (sub * self.type()).normalize())
         else:
-            return TBoundVariable(self.name, self.varType, self.deBruijn - len(sub.subs) + sub.shift)
+            return TBoundVariable(self.name, TSubstitution(self.varType, sub), self.deBruijn - sub.len + sub.shift)
 
 class TUniverse(Term):
     def __init__(self, n):
@@ -148,18 +155,24 @@ class TAbstraction(Term):
     def _identical(self, term):
         return (self is term) or (isinstance(term, self.__class__) and (self.varType == term.varType) and (self.term == term.term))
     def _normalize(self):
+#       print(self.__class__.__name__ + '._normalize:')
+#       print('    self: ' + str(self))
+#       print('    self.type: ' + str(self.type()))
         return self.__class__(self.name, self.varType.normalize(), self.term.normalize())
     def _normalizeLazily(self):
         return self
     def _apply(self, sub):
+#       print(self.__class__.__name__ + '._apply: ' + str(self) + ' | ' + str(sub))
         s = Substitution(shift = 1) * sub
-        s.subs.append(TBoundVariable(self.name, t, 1))
+#       s.subs.append(TBoundVariable(self.name, s * self.varType, 1))
+        s = SConcat(s, TBoundVariable(self.name, TSubstitution(self.varType, s), 1))
+#       s = Substitution(shift = s.shift, subs = s.subs + [TBoundVariable(self.name, TSubstitution(self.varType, s), 1)])
+        # It's dangerous to modify the data inside s here
         return self.__class__(self.name, TSubstitution(self.varType, sub), TSubstitution(self.term, s))
 
 class TProduct(TAbstraction):
-    # Where should we check correctness?
     def __init__(self, name, type, term):
-        super().__init__(name, type, term)
+        super(TProduct, self).__init__(name, type, term)
     def __repr__(self):
         return 'TProduct(' + repr(self.name) + ', ' + repr(self.varType) + ', ' + repr(self.term) + ')'
     def __str__(self):
@@ -177,9 +190,8 @@ class TProduct(TAbstraction):
         return TUniverse(max(t1.n, t2.n))
 
 class TLambda(TAbstraction):
-    # Where should we check correctness?
     def __init__(self, name, type, term):
-        super().__init__(name, type, term)
+        super(TLambda, self).__init__(name, type, term)
     def __repr__(self):
         return 'TLambda(' + repr(self.name) + ', ' + repr(self.varType) + ', ' + repr(self.term) + ')'
     def __str__(self):
@@ -222,31 +234,84 @@ class TApplication(Term):
 
 class Substitution(object):
     def __init__(self, subs = [], shift = 0):
-        '''subs is a list of substitutions for de Bruijn variables in reversed order. Var i is substituted for subs[-i], the remaining indices are shifted
-        Substitutions are composed eagerly.'''
-        self.subs = subs
+        '''subs is a list of substitutions for de Bruijn variables. Var i is substituted for subs[i - 1], the remaining indices are shifted.'''
+        self._subs = subs
+        self.len = len(subs)
         self.shift = shift
     def __repr__(self):
-        return 'Substitution(subs = ' + repr(self.subs) + ', shift = ' + repr(self.shift) + ')'
+        return 'Substitution(subs = ' + repr(self._subs) + ', shift = ' + repr(self.shift) + ')'
     def __str__(self):
         r = ''
-        for s in self.subs:
-            r = ', ' + str(s) + r
+        for s in range(self.len):
+            r = r + ', ' + str(self[s + 1])
         r = r + ', shift ' + str(self.shift)
         return r[2:]
+    def __getitem__(self, key):
+        return self._subs[key - 1]
     def __mul__(self, other):
         if isinstance(other, Substitution):
-            if other.shift < len(self.subs):
-                return Substitution(subs = self.subs[: -other.shift] + [TSubstitution(t, self) for t in other.subs], shift = self.shift)
-            else:
-                return Substitution([TSubstitution(t, self) for t in other.subs], shift = self.shift + other.shift - len(self.subs))
+            return SComposition(self, other)
+#            if other.shift < len(self.subs):
+#                return Substitution(subs = self.subs[: len(self.subs) - other.shift] + [TSubstitution(t, self) for t in other.subs], shift = self.shift)
+#            else:
+#                return Substitution([TSubstitution(t, self) for t in other.subs], shift = self.shift + other.shift - len(self.subs))
         elif isinstance(other, Term):
             return other._apply(self)
         else:
             return NotImplemented
     def __eq__(self, sub):
-        return (self is sub) or (isinstance(sub, Substitution) and (self.shift == sub.shift) and (len(self.subs) == len(sub.subs)) and
-            all(t1 == t2 for t1, t2 in zip(self.subs, sub.subs)))
+        return (self is sub) or ((self.__class__ is Substitution) and (sub.__class__ is Substitution) and (self.shift == sub.shift) and (self.len == sub.len) and
+            all(self[i] == t2 for t1, t2 in zip(self._subs, sub._subs)))
+    def normalize(self):
+        return SNormalized(self)
+
+class SComposition(Substitution):
+    def __init__(self, sub1, sub2):
+        self.sub1 = sub1
+        self.sub2 = sub2
+        if self.sub2.shift < self.sub1.len:
+            self.shift = self.sub1.shift
+            self.len = self.sub1.len - self.sub2.shift + self.sub2.len
+        else:
+            self.shift = self.sub1.shift + self.sub2.shift - self.sub1.len
+            self.len = self.sub2.len
+        self._lazySubs = {}
+        for i in range(self.len):
+            self[i + 1]
+    def __getitem__(self, key):
+        try:
+            return self._lazySubs[key]
+        except KeyError:
+            if (self.sub2.shift >= self.sub1.len) or (key <= self.sub2.len):
+                r = TSubstitution(self.sub2[key], self.sub1)
+            else:
+                r = self.sub1[key + self.sub2.shift - self.sub2.len]
+            self._lazySubs[key] = r
+            return r
+
+class SConcat(Substitution):
+    def __init__(self, sub, term):
+        self.sub = sub
+        self.term = term
+        self.shift = sub.shift
+        self.len = sub.len + 1
+        for i in range(self.len):
+            self[i + 1]
+    def __getitem__(self, key):
+        if key == 1:
+            return self.term
+        else:
+            return self.sub[key - 1]
+
+class SNormalized(Substitution):
+    def __init__(self, sub):
+        self.sub = sub
+        self.shift = sub.shift
+        self.len = sub.len
+    def __getitem__(self, key):
+        return self.sub[key].normalize()
+    def normalize(self):
+        return self
 
 class TSubstitution(Term):
     def __init__(self, term, sub):
@@ -261,8 +326,12 @@ class TSubstitution(Term):
     def _type(self):
         return TSubstitution(self.term.type(), self.sub)
     def _normalize(self):
-        return (self.sub * self.term).normalize()
+#       print(self.__class__.__name__ + '._normalize:')
+#       print('    self: ' + str(self))
+#       print('    self.type: ' + str(self.type()))
+        return (self.sub.normalize() * self.term.normalize()).normalize()
     def _normalizeLazily(self):
         return (self.sub * self.term).normalizeLazily()
     def _apply(self, sub):
         return TSubstitution(self.term, sub * self.sub)
+

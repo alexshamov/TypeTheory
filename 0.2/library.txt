@@ -18,5 +18,7 @@ definition two := plus one one
 definition three := plus two one
 definition twohundredfiftysix := power two (power two three)
 
-evaluate twohundredfiftysix
+time evaluate twohundredfiftysix N S O
+time unsafely evaluate twohundredfiftysix N S O
+time silently unsafely evaluate twohundredfiftysix N S O
 

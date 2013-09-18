@@ -18,30 +18,36 @@ class PTerm(object):
     def calcIndices(self):
         for c in self.children:
             c.calcIndices()
-    def inferTypes(self):
+    def shiftTypes(self):
         for c in self.children:
-            c.inferTypes()
+            c.shiftTypes()
     def Translate(self):
         for name in self.free:
             for var in self.free[name]:
                 var.glob = True
         self.calcIndices()
-        self.inferTypes()
-        return self.translate()
+        translation = self.translate()
+        self.shiftTypes()
+        return translation
 
 class PVariable(PTerm):
     def __init__(self, name):
         self.name = name
-        self.type = None
         self.free = {name: [self]}
         self.children = []
         self.deBruijn = 0
         self.glob = False
+    def shiftTypes(self):
+        if not self.glob:
+            self.translation.varType = Substitution(shift = self.deBruijn) * self.translation.varType
     def translate(self):
         if self.glob:
             return TGlobalVariable(Variable(self.name))
         else:
-            return TBoundVariable(self.name, self.type.translate(), self.deBruijn)
+            self.translation = TBoundVariable(self.name, None, self.deBruijn)
+            # The PAbstraction is responsible for linking self.translation.abs
+            # to its own translation via linkAbs()
+            return self.translation
 
 class PBinder(PTerm):
     def __init__(self, name, term):
@@ -59,7 +65,7 @@ class PBinder(PTerm):
                     self.free[name] = self.term.free[name]
     def calcIndices(self):
         self.term.raiseIndices()
-        super().calcIndices()
+        super(PBinder, self).calcIndices()
     def translate(self):
         return self.term.translate()
 
@@ -71,11 +77,10 @@ class PAbstraction(PTerm):
         self.children = [type, PBinder(name, term)]
         self.free = {}
         self.mergeFree()
-    def inferTypes(self):
+    def linkAbs(self):
         if self.name in self.term.free:
             for v in self.term.free[self.name]:
-                v.type = self.type
-        super().inferTypes()
+                v.translation.varType = self.translation.varType
 
 class PUniverse(PTerm):
     def __init__(self, n):
@@ -87,15 +92,19 @@ class PUniverse(PTerm):
 
 class PProduct(PAbstraction):
     def __init__(self, name, type, term):
-        super().__init__(name, type, term)
+        super(PProduct, self).__init__(name, type, term)
     def translate(self):
-        return TProduct(self.name, self.type.translate(), self.term.translate())
+        self.translation = TProduct(self.name, self.type.translate(), self.term.translate())
+        self.linkAbs()
+        return self.translation
 
 class PLambda(PAbstraction):
     def __init__(self, name, type, term):
-        super().__init__(name, type, term)
+        super(PLambda, self).__init__(name, type, term)
     def translate(self):
-        return TLambda(self.name, self.type.translate(), self.term.translate())
+        self.translation = TLambda(self.name, self.type.translate(), self.term.translate())
+        self.linkAbs()
+        return self.translation
 
 class PApplication(PTerm):
     def __init__(self, term1, term2):

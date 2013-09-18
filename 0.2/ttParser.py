@@ -11,6 +11,9 @@ import ttErrors
 import ply.lex as lex
 import ply.yacc as yacc
 
+import time
+from time import clock
+
 class Statement(object):
     pass
 
@@ -70,10 +73,34 @@ class SSilently(Statement):
         self.stat.execute()
         return None
 
+class SUnsafely(Statement):
+    def __init__(self, stat):
+        self.stat = stat
+    def execute(self):
+        setUnsafeMode(True)
+        try:
+            r = None
+            r = self.stat.execute()
+        finally:
+            setUnsafeMode(False)
+            return r
+
+class STime(Statement):
+    def __init__(self, stat):
+        self.stat = stat
+    def execute(self):
+        t1 = clock()
+        try:
+            r = self.stat.execute()
+        finally:
+            t2 = clock()
+            print(round((t2 - t1) * 100) / 100, 'sec')
+            return r
+
 keywords = \
     (
-        'type',
-        'parameter', 'definition', 'check', 'evaluate', 'context', 'quit', 'silently'
+        'type', 'parameter', 'definition', 'check', 'evaluate', 'context', 'quit',
+        'silently', 'unsafely', 'time'
     )
 
 tokens = keywords + \
@@ -161,6 +188,14 @@ def p_statement_empty(t):
 def p_statement_silently(t):
     'statement : silently statement'
     t[0] = SSilently(t[2])
+
+def p_statement_unsafely(t):
+    'statement : unsafely statement'
+    t[0] = SUnsafely(t[2])
+
+def p_statement_time(t):
+    'statement : time statement'
+    t[0] = STime(t[2])
 
 def p_binder(t):
     'binder : name colon expression %prec colon'
